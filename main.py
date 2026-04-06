@@ -7,9 +7,9 @@ import logging
 import os
 import sys
 
-from config import DEFAULT_OUTPUT_DIR, MAX_PAGES
+from config import DEFAULT_OUTPUT_DIR
 from models import Tweet, UserProfile
-from scraper import TwitterScraper
+from scraper import TwitterScraper, DEFAULT_MAX_PAGES
 from analyzer import TweetAnalyzer
 from reporter import print_report, save_report
 
@@ -17,10 +17,10 @@ from reporter import print_report, save_report
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Scrape and analyze a Twitter/X user's feed.",
-        epilog="Example: python main.py elonmusk --max-pages 3",
+        epilog="Example: python main.py sam_allsopp_ --max-pages 10",
     )
     parser.add_argument("username", help="Twitter/X username to scrape (without @)")
-    parser.add_argument("--max-pages", type=int, default=MAX_PAGES, help=f"Max pages to scrape (default: {MAX_PAGES})")
+    parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES, help=f"Max pages to scrape, ~20 tweets each (default: {DEFAULT_MAX_PAGES})")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--no-analysis", action="store_true", help="Only scrape, skip analysis")
     parser.add_argument("--load-json", metavar="FILE", help="Load previously scraped JSON instead of scraping")
@@ -90,7 +90,7 @@ def main():
             print(f"Saved tweet data to {out_file}")
 
     if not tweets:
-        print("No tweets found. Check the username or refresh your auth tokens in .env.")
+        print("No tweets found. Check the username or refresh tokens in scraper.py.")
         sys.exit(0)
 
     if args.no_analysis:

@@ -1,136 +1,88 @@
-"""Twitter/X GraphQL API scraper using browser session tokens."""
+"""Twitter/X GraphQL API scraper."""
 
 import json
-import os
-import re
 import time
 import random
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import quote
 
 import requests
 
-from config import REQUEST_TIMEOUT
 from models import Tweet, UserProfile
 
 logger = logging.getLogger(__name__)
-
-# Twitter's public Bearer token (same for all users, embedded in the web app)
-BEARER_TOKEN = (
-    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
-    "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
-)
-
-GRAPHQL_FEATURES = {
-    "rweb_video_screen_enabled": False,
-    "profile_label_improvements_pcf_label_in_post_enabled": True,
-    "responsive_web_profile_redirect_enabled": False,
-    "rweb_tipjar_consumption_enabled": False,
-    "verified_phone_label_enabled": False,
-    "creator_subscriptions_tweet_preview_api_enabled": True,
-    "responsive_web_graphql_timeline_navigation_enabled": True,
-    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
-    "premium_content_api_read_enabled": False,
-    "communities_web_enable_tweet_community_results_fetch": True,
-    "c9s_tweet_anatomy_moderator_badge_enabled": True,
-    "responsive_web_grok_analyze_button_fetch_trends_enabled": False,
-    "responsive_web_grok_analyze_post_followups_enabled": True,
-    "responsive_web_jetfuel_frame": True,
-    "responsive_web_grok_share_attachment_enabled": True,
-    "responsive_web_grok_annotations_enabled": True,
-    "articles_preview_enabled": True,
-    "responsive_web_edit_tweet_api_enabled": True,
-    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
-    "view_counts_everywhere_api_enabled": True,
-    "longform_notetweets_consumption_enabled": True,
-    "responsive_web_twitter_article_tweet_consumption_enabled": True,
-    "content_disclosure_indicator_enabled": True,
-    "content_disclosure_ai_generated_indicator_enabled": True,
-    "responsive_web_grok_show_grok_translated_post": True,
-    "responsive_web_grok_analysis_button_from_backend": True,
-    "post_ctas_fetch_enabled": True,
-    "freedom_of_speech_not_reach_fetch_enabled": True,
-    "standardized_nudges_misinfo": True,
-    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
-    "longform_notetweets_rich_text_read_enabled": True,
-    "longform_notetweets_inline_media_enabled": False,
-    "responsive_web_grok_image_annotation_enabled": True,
-    "responsive_web_grok_imagine_annotation_enabled": True,
-    "responsive_web_grok_community_note_auto_translation_is_enabled": False,
-    "responsive_web_enhance_cards_enabled": False,
-}
-
-FIELD_TOGGLES = {"withArticlePlainText": False}
 
 # GraphQL endpoint IDs (from Twitter's web app)
 USER_TWEETS_ENDPOINT = "x3B_xLqC0yZawOB7WQhaVQ/UserTweets"
 USER_BY_SCREEN_NAME_ENDPOINT = "qW5u-DAen47o2oBGUOGIeg/UserByScreenName"
 
+HEADERS = {
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
+    "content-type": "application/json",
+    "priority": "u=1, i",
+    "sec-ch-ua": '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "x-csrf-token": "6c0527719f51d9f1c3ccfaad7ac31d18568c1bb56f63bc1c665359edfddd750bfd877f705d80d02d4828d1128fd7b435c86b6515ae49548f8e4d28606ee668b7024b48215983511a8348e7c94d28f197",
+    "x-twitter-active-user": "yes",
+    "x-twitter-auth-type": "OAuth2Session",
+    "x-twitter-client-language": "en",
+}
 
-def _load_tokens() -> tuple[str, str]:
-    """Load auth tokens from .env file or environment variables."""
-    auth_token = os.environ.get("AUTH_TOKEN", "")
-    ct0 = os.environ.get("CT0", "")
+COOKIES = {
+    "auth_token": "7619575179a5309df8700b8e028a9d75c997ff96",
+    "ct0": "6c0527719f51d9f1c3ccfaad7ac31d18568c1bb56f63bc1c665359edfddd750bfd877f705d80d02d4828d1128fd7b435c86b6515ae49548f8e4d28606ee668b7024b48215983511a8348e7c94d28f197",
+}
 
-    # Try loading from .env file if not in environment
-    if not auth_token or not ct0:
-        env_path = os.path.join(os.path.dirname(__file__), ".env")
-        if os.path.exists(env_path):
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("#") or "=" not in line:
-                        continue
-                    key, val = line.split("=", 1)
-                    key, val = key.strip(), val.strip()
-                    if key == "AUTH_TOKEN":
-                        auth_token = val
-                    elif key == "CT0":
-                        ct0 = val
+FEATURES = '{"rweb_video_screen_enabled":false,"profile_label_improvements_pcf_label_in_post_enabled":true,"responsive_web_profile_redirect_enabled":false,"rweb_tipjar_consumption_enabled":false,"verified_phone_label_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"premium_content_api_read_enabled":false,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"responsive_web_grok_analyze_button_fetch_trends_enabled":false,"responsive_web_grok_analyze_post_followups_enabled":true,"responsive_web_jetfuel_frame":true,"responsive_web_grok_share_attachment_enabled":true,"responsive_web_grok_annotations_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"responsive_web_twitter_article_tweet_consumption_enabled":true,"content_disclosure_indicator_enabled":true,"content_disclosure_ai_generated_indicator_enabled":true,"responsive_web_grok_show_grok_translated_post":true,"responsive_web_grok_analysis_button_from_backend":true,"post_ctas_fetch_enabled":true,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":false,"responsive_web_grok_image_annotation_enabled":true,"responsive_web_grok_imagine_annotation_enabled":true,"responsive_web_grok_community_note_auto_translation_is_enabled":false,"responsive_web_enhance_cards_enabled":false}'
 
-    if not auth_token or not ct0:
-        raise ValueError(
-            "Missing auth tokens. Set AUTH_TOKEN and CT0 in .env file.\n"
-            "See .env.example for instructions on getting these from your browser."
-        )
-    return auth_token, ct0
+FIELD_TOGGLES = '{"withArticlePlainText":false}'
+
+# Target user ID (sam_allsopp_)
+TARGET_USER_ID = "950472202679390208"
+
+# 6 pages x 20 tweets = ~120 tweets
+DEFAULT_MAX_PAGES = 6
+REQUEST_TIMEOUT = 20
 
 
 class TwitterScraper:
     """Scrapes Twitter/X using the internal GraphQL API."""
 
-    def __init__(self, username: str, max_pages: int = 5):
+    def __init__(self, username: str, max_pages: int = DEFAULT_MAX_PAGES):
         self.username = username.lstrip("@")
         self.max_pages = max_pages
-        auth_token, ct0 = _load_tokens()
-
-        self.session = requests.Session()
-        self.session.headers.update({
-            "accept": "*/*",
-            "accept-language": "en-US,en;q=0.9",
-            "authorization": f"Bearer {BEARER_TOKEN}",
-            "content-type": "application/json",
-            "x-csrf-token": ct0,
-            "x-twitter-active-user": "yes",
-            "x-twitter-auth-type": "OAuth2Session",
-            "x-twitter-client-language": "en",
-            "user-agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/146.0.0.0 Safari/537.36"
-            ),
-            "referer": f"https://x.com/{self.username}",
-        })
-        self.session.cookies.update({
-            "auth_token": auth_token,
-            "ct0": ct0,
-        })
-
         self._user_id: str | None = None
 
-    def _get_user_id(self) -> str:
-        """Resolve username to user ID via GraphQL."""
+    def _get(self, url: str, params: dict | None = None) -> requests.Response:
+        """Make a GET request with auth headers and cookies."""
+        headers = {**HEADERS, "referer": f"https://x.com/{self.username}"}
+        resp = requests.get(url, params=params, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+
+        if resp.status_code == 429:
+            wait = 60
+            logger.warning(f"Rate limited. Waiting {wait}s...")
+            time.sleep(wait)
+            resp = requests.get(url, params=params, headers=headers, cookies=COOKIES, timeout=REQUEST_TIMEOUT)
+
+        if resp.status_code in (401, 403):
+            raise PermissionError(
+                f"Auth failed (HTTP {resp.status_code}). "
+                "Tokens may have expired -- update COOKIES and x-csrf-token in scraper.py."
+            )
+
+        resp.raise_for_status()
+        return resp
+
+    def _resolve_user_id(self) -> str:
+        """Resolve username to numeric user ID."""
         if self._user_id:
             return self._user_id
 
@@ -150,19 +102,14 @@ class TwitterScraper:
             "responsive_web_graphql_timeline_navigation_enabled": True,
         })
 
-        url = (
-            f"https://x.com/i/api/graphql/{USER_BY_SCREEN_NAME_ENDPOINT}"
-            f"?variables={quote(variables)}&features={quote(features)}"
-        )
-
-        resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
+        params = {"variables": variables, "features": features}
+        resp = self._get(f"https://x.com/i/api/graphql/{USER_BY_SCREEN_NAME_ENDPOINT}", params=params)
         data = resp.json()
 
         user_result = data.get("data", {}).get("user", {}).get("result", {})
         self._user_id = user_result.get("rest_id", "")
         if not self._user_id:
-            raise ValueError(f"Could not find user ID for @{self.username}. Check the username.")
+            raise ValueError(f"Could not find user ID for @{self.username}.")
         logger.info(f"Resolved @{self.username} -> user ID {self._user_id}")
         return self._user_id
 
@@ -184,13 +131,8 @@ class TwitterScraper:
             "responsive_web_graphql_timeline_navigation_enabled": True,
         })
 
-        url = (
-            f"https://x.com/i/api/graphql/{USER_BY_SCREEN_NAME_ENDPOINT}"
-            f"?variables={quote(variables)}&features={quote(features)}"
-        )
-
-        resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
+        params = {"variables": variables, "features": features}
+        resp = self._get(f"https://x.com/i/api/graphql/{USER_BY_SCREEN_NAME_ENDPOINT}", params=params)
         data = resp.json()
 
         user = data.get("data", {}).get("user", {}).get("result", {})
@@ -206,16 +148,14 @@ class TwitterScraper:
             joined=legacy.get("created_at", ""),
             verified=user.get("is_blue_verified", False),
         )
-
-        # Cache user ID
         self._user_id = user.get("rest_id", "")
-
         return profile
 
     def scrape_tweets(self) -> list[Tweet]:
-        """Fetch tweets from the user's timeline using GraphQL pagination."""
-        user_id = self._get_user_id()
+        """Fetch 100+ tweets from the user's timeline with cursor pagination."""
+        user_id = self._resolve_user_id()
         all_tweets: list[Tweet] = []
+        seen_ids: set[str] = set()
         cursor: str | None = None
 
         for page in range(self.max_pages):
@@ -224,53 +164,54 @@ class TwitterScraper:
             variables = {
                 "userId": user_id,
                 "count": 20,
-                "includePromotedContent": False,
+                "includePromotedContent": True,
                 "withQuickPromoteEligibilityTweetFields": True,
                 "withVoice": True,
             }
             if cursor:
                 variables["cursor"] = cursor
 
-            url = (
-                f"https://x.com/i/api/graphql/{USER_TWEETS_ENDPOINT}"
-                f"?variables={quote(json.dumps(variables))}"
-                f"&features={quote(json.dumps(GRAPHQL_FEATURES))}"
-                f"&fieldToggles={quote(json.dumps(FIELD_TOGGLES))}"
-            )
+            params = {
+                "variables": json.dumps(variables),
+                "features": FEATURES,
+                "fieldToggles": FIELD_TOGGLES,
+            }
 
-            resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
-            if resp.status_code == 429:
-                logger.warning("Rate limited. Waiting 60 seconds...")
-                time.sleep(60)
-                resp = self.session.get(url, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-
+            resp = self._get(f"https://x.com/i/api/graphql/{USER_TWEETS_ENDPOINT}", params=params)
             data = resp.json()
+
             tweets, next_cursor = self._parse_timeline_response(data)
 
-            if not tweets:
-                logger.info("No more tweets found.")
+            # Deduplicate
+            new_tweets = []
+            for t in tweets:
+                if t.id and t.id not in seen_ids:
+                    seen_ids.add(t.id)
+                    new_tweets.append(t)
+
+            if not new_tweets:
+                logger.info("No new tweets found, stopping.")
                 break
 
-            all_tweets.extend(tweets)
-            logger.info(f"  Got {len(tweets)} tweets (total: {len(all_tweets)})")
+            all_tweets.extend(new_tweets)
+            logger.info(f"  Got {len(new_tweets)} tweets (total: {len(all_tweets)})")
 
             if not next_cursor:
+                logger.info("No next cursor, reached end of timeline.")
                 break
             cursor = next_cursor
 
             # Polite delay
-            time.sleep(random.uniform(1.0, 2.5))
+            time.sleep(random.uniform(1.5, 3.0))
 
         logger.info(f"Scraped {len(all_tweets)} tweets total.")
         return all_tweets
 
     def _parse_timeline_response(self, data: dict) -> tuple[list[Tweet], str | None]:
-        """Parse the GraphQL timeline response into Tweet objects."""
+        """Parse GraphQL timeline response into Tweet objects."""
         tweets: list[Tweet] = []
         next_cursor: str | None = None
 
-        # Navigate the nested response structure
         instructions = (
             data.get("data", {})
             .get("user", {})
@@ -283,32 +224,29 @@ class TwitterScraper:
         entries = []
         for instruction in instructions:
             if instruction.get("type") == "TimelineAddEntries":
-                entries = instruction.get("entries", [])
+                entries.extend(instruction.get("entries", []))
             elif instruction.get("type") == "TimelineAddToModule":
                 entries.extend(instruction.get("moduleItems", []))
 
         for entry in entries:
             entry_id = entry.get("entryId", "")
 
-            # Pagination cursor
+            # Pagination cursors
             if "cursor-bottom" in entry_id:
-                content = entry.get("content", {})
-                next_cursor = content.get("value", "")
+                next_cursor = entry.get("content", {}).get("value", "")
                 continue
             if "cursor-top" in entry_id:
                 continue
 
-            # Tweet entries
-            if entry_id.startswith("tweet-") or entry_id.startswith("profile-conversation"):
+            # Single tweet
+            if entry_id.startswith("tweet-"):
                 tweet = self._extract_tweet_from_entry(entry)
                 if tweet:
                     tweets.append(tweet)
-            # Conversation threads (multiple tweets)
+
+            # Conversation thread
             elif entry_id.startswith("profile-conversation"):
-                items = (
-                    entry.get("content", {})
-                    .get("items", [])
-                )
+                items = entry.get("content", {}).get("items", [])
                 for item in items:
                     tweet = self._extract_tweet_from_item(item)
                     if tweet:
@@ -317,50 +255,33 @@ class TwitterScraper:
         return tweets, next_cursor
 
     def _extract_tweet_from_entry(self, entry: dict) -> Tweet | None:
-        """Extract a Tweet from a timeline entry."""
-        content = entry.get("content", {})
-        # Single tweet
-        item_content = content.get("itemContent", {})
-        if not item_content:
-            # Could be a conversation module
-            items = content.get("items", [])
-            for item in items:
-                tweet = self._extract_tweet_from_item(item)
-                if tweet:
-                    return tweet
-            return None
-
-        return self._parse_tweet_result(item_content)
+        item_content = entry.get("content", {}).get("itemContent", {})
+        if item_content:
+            return self._parse_tweet_result(item_content)
+        return None
 
     def _extract_tweet_from_item(self, item: dict) -> Tweet | None:
-        """Extract a Tweet from a module item."""
         item_content = item.get("item", {}).get("itemContent", {})
         return self._parse_tweet_result(item_content)
 
     def _parse_tweet_result(self, item_content: dict) -> Tweet | None:
         """Parse a tweet from the GraphQL tweet_results structure."""
-        tweet_results = item_content.get("tweet_results", {})
-        result = tweet_results.get("result", {})
+        result = item_content.get("tweet_results", {}).get("result", {})
 
-        # Handle "TweetWithVisibilityResults" wrapper
         if result.get("__typename") == "TweetWithVisibilityResults":
             result = result.get("tweet", {})
-
-        if not result or result.get("__typename") not in ("Tweet", None):
-            if result.get("__typename") == "TweetTombstone":
-                return None
-            if not result.get("legacy"):
-                return None
+        if not result or result.get("__typename") == "TweetTombstone":
+            return None
 
         legacy = result.get("legacy", {})
-        core = result.get("core", {}).get("user_results", {}).get("result", {})
-        user_legacy = core.get("legacy", {})
+        if not legacy:
+            return None
 
         text = legacy.get("full_text", "")
         if not text:
             return None
 
-        # Parse timestamp
+        # Timestamp
         timestamp = None
         created_at = legacy.get("created_at", "")
         if created_at:
@@ -375,13 +296,8 @@ class TwitterScraper:
         replies = legacy.get("reply_count", 0)
         quotes = legacy.get("quote_count", 0)
 
-        # Tweet ID
         tweet_id = legacy.get("id_str", result.get("rest_id", ""))
-
-        # Is retweet?
         is_retweet = text.startswith("RT @") or "retweeted_status_result" in legacy
-
-        # Is reply?
         is_reply = bool(legacy.get("in_reply_to_status_id_str"))
 
         # Media
@@ -391,20 +307,15 @@ class TwitterScraper:
             media_entities = legacy.get("entities", {}).get("media", [])
         if media_entities:
             mtype = media_entities[0].get("type", "")
-            if mtype == "photo":
-                media_type = "image"
-            elif mtype == "video":
-                media_type = "video"
-            elif mtype == "animated_gif":
-                media_type = "gif"
+            media_type = {"photo": "image", "video": "video", "animated_gif": "gif"}.get(mtype)
 
-        # Hashtags, mentions, urls from entities
+        # Entities
         entities = legacy.get("entities", {})
         hashtags = [h.get("text", "") for h in entities.get("hashtags", [])]
         mentions = [m.get("screen_name", "") for m in entities.get("user_mentions", [])]
         urls = [u.get("expanded_url", "") for u in entities.get("urls", []) if u.get("expanded_url")]
 
-        # Clean t.co URLs from display text
+        # Expand t.co URLs in text
         for url_entity in entities.get("urls", []):
             short = url_entity.get("url", "")
             expanded = url_entity.get("expanded_url", "")
