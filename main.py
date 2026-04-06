@@ -9,18 +9,17 @@ import sys
 
 from config import DEFAULT_OUTPUT_DIR, MAX_PAGES
 from models import Tweet, UserProfile
-from scraper import NitterScraper
+from scraper import TwitterScraper
 from analyzer import TweetAnalyzer
 from reporter import print_report, save_report
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Scrape and analyze a Twitter/X user's feed via Nitter.",
+        description="Scrape and analyze a Twitter/X user's feed.",
         epilog="Example: python main.py elonmusk --max-pages 3",
     )
     parser.add_argument("username", help="Twitter/X username to scrape (without @)")
-    parser.add_argument("--instance", help="Specific Nitter instance URL to use")
     parser.add_argument("--max-pages", type=int, default=MAX_PAGES, help=f"Max pages to scrape (default: {MAX_PAGES})")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--no-analysis", action="store_true", help="Only scrape, skip analysis")
@@ -49,28 +48,33 @@ def main():
         logging.info(f"Loading tweets from {args.load_json}")
         with open(args.load_json) as f:
             data = json.load(f)
-        if "profile" in data:
+        if "profile" in data and data["profile"]:
             profile = UserProfile.from_dict(data["profile"])
         tweets = [Tweet.from_dict(t) for t in data.get("tweets", [])]
         logging.info(f"Loaded {len(tweets)} tweets.")
     else:
-        # Scrape from Nitter
+        # Scrape from Twitter/X GraphQL API
         print(f"Scraping @{username}'s feed...")
-        scraper = NitterScraper(username, instance=args.instance, max_pages=args.max_pages)
+        try:
+            scraper = TwitterScraper(username, max_pages=args.max_pages)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
         try:
             profile = scraper.scrape_profile()
             if profile.display_name:
                 print(f"Found profile: {profile.display_name} (@{username})")
                 print(f"  Followers: {profile.followers:,} | Following: {profile.following:,}")
+                print(f"  Tweets: {profile.tweet_count:,}")
         except Exception as e:
             logging.warning(f"Could not scrape profile: {e}")
 
         try:
             tweets = scraper.scrape_tweets()
             print(f"Scraped {len(tweets)} tweets.")
-        except ConnectionError as e:
-            print(f"Error: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"Error scraping tweets: {e}", file=sys.stderr)
             sys.exit(1)
 
         if tweets:
@@ -86,7 +90,7 @@ def main():
             print(f"Saved tweet data to {out_file}")
 
     if not tweets:
-        print("No tweets found. Try a different username or Nitter instance.")
+        print("No tweets found. Check the username or refresh your auth tokens in .env.")
         sys.exit(0)
 
     if args.no_analysis:
